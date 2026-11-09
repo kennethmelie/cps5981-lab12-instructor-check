@@ -25,22 +25,29 @@ jobs:
         run: |
           mkdir -p provenance
           gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" 2>&1 | tee provenance/verify-pass.txt
-          gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" --format json > provenance/verify-pass.json
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --format json > provenance/verify-pass.json
+          jq -r '.[0].verificationResult as $v | $v.signature.certificate as $c |
+            "Verification succeeded (exit code 0)",
+            "  artifact digest : sha256:\($v.statement.subject[0].digest.sha256 // "?")",
+            "  predicate       : \($v.statement.predicateType // "?")",
+            "  signed by       : \($c.buildSignerURI // "?")",
+            "  source          : \($c.sourceRepositoryURI // "?") @ \($c.sourceRepositoryDigest // "?")",
+            "  build run       : \($c.runInvocationURI // "?")",
+            "  issuer          : \($c.issuer // "?")"' provenance/verify-pass.json | tee provenance/verify-pass.txt
       - name: "FAIL case 1 - the same artifact with one byte added"
         run: |
           cp rel/cougar-advising.tar.gz tampered.tar.gz && printf 'x' >> tampered.tar.gz
           if gh attestation verify tampered.tar.gz --repo "$GITHUB_REPOSITORY" > provenance/verify-fail-tampered.txt 2>&1; then
             echo "::error::A tampered artifact verified. The check is broken."; exit 1
           fi
-          echo "Verification failed, as it must:"; cat provenance/verify-fail-tampered.txt
+          echo "Verification failed, as it must. The changed bytes have a new digest, and no attestation exists for it:"; cat provenance/verify-fail-tampered.txt
       - name: "FAIL case 2 - the right bytes, but the wrong builder"
         run: |
           if gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/hotfix.yml" > provenance/verify-fail-wrong-builder.txt 2>&1; then
             echo "::error::Verification ignored the builder constraint. The check is broken."; exit 1
           fi
-          echo "Verification failed, as it must:"; cat provenance/verify-fail-wrong-builder.txt
+          echo "Verification failed, as it must. The attestation was signed by release.yml; this check demanded hotfix.yml:"; cat provenance/verify-fail-wrong-builder.txt
       - name: Download the signed attestation bundle
         run: gh attestation download rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" && mv sha256:*.jsonl provenance/attestation-bundle.jsonl
       - name: Summary
