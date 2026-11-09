@@ -1,0 +1,4 @@
+# Historic findings, listed only after the secret was revoked.
+# 2026-11-09: cgr_live DEPLOY_TOKEN from the October pilot. Revoked; replaced by the
+# "production" environment secret (rotated value). It remains in history, so it is treated as exposed.
+6a225bdc4917540b23e47735d43ebe6c2d831178:config/app.env:generic-api-key:5

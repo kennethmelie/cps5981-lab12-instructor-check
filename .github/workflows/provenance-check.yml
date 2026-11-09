@@ -1,0 +1,58 @@
+# Lab 12 reference: a check you have only seen pass is not a tested check.
+name: provenance-check
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to check, for example v1.0.0
+        required: true
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Download the release
+        run: gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --pattern cougar-advising.tar.gz --dir rel
+      - name: "PASS case - the released artifact"
+        run: |
+          mkdir -p provenance
+          gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" 2>&1 | tee provenance/verify-pass.txt
+          gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" --format json > provenance/verify-pass.json
+      - name: "FAIL case 1 - the same artifact with one byte added"
+        run: |
+          cp rel/cougar-advising.tar.gz tampered.tar.gz && printf 'x' >> tampered.tar.gz
+          if gh attestation verify tampered.tar.gz --repo "$GITHUB_REPOSITORY" > provenance/verify-fail-tampered.txt 2>&1; then
+            echo "::error::A tampered artifact verified. The check is broken."; exit 1
+          fi
+          echo "Verification failed, as it must:"; cat provenance/verify-fail-tampered.txt
+      - name: "FAIL case 2 - the right bytes, but the wrong builder"
+        run: |
+          if gh attestation verify rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
+               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/hotfix.yml" > provenance/verify-fail-wrong-builder.txt 2>&1; then
+            echo "::error::Verification ignored the builder constraint. The check is broken."; exit 1
+          fi
+          echo "Verification failed, as it must:"; cat provenance/verify-fail-wrong-builder.txt
+      - name: Download the signed attestation bundle
+        run: gh attestation download rel/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" && mv sha256:*.jsonl provenance/attestation-bundle.jsonl
+      - name: Summary
+        run: |
+          {
+            echo "## Provenance check: $VERSION"
+            echo "| Case | Expected | Result |"; echo "|---|---|---|"
+            echo "| Released artifact, release.yml as builder | verifies | PASS |"
+            echo "| One byte added | fails | FAIL as required |"
+            echo "| Right bytes, wrong builder (hotfix.yml) | fails | FAIL as required |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: provenance
+          path: provenance/

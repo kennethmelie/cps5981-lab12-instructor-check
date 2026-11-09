@@ -1,30 +1,121 @@
-# STARTER - deliberately weak. Deploys whatever currently holds the "latest" tag.
+# Lab 12 reference: deploy one approved set of bytes, by digest, after a named approval, then check production.
 name: deploy
 on:
   workflow_dispatch:
-  workflow_call:
+    inputs:
+      version:
+        description: Release version to deploy, for example v1.0.0
+        required: true
+      sha256:
+        description: The approved SHA-256 from artifact-hash.txt
+        required: true
 
-permissions: write-all
+permissions: {}
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  SHA256: ${{ inputs.sha256 }}
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download the release by version
+        run: gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --pattern cougar-advising.tar.gz --dir verified
+      - name: Check these are the approved bytes
+        run: echo "$SHA256  verified/cougar-advising.tar.gz" | sha256sum --check --strict
+      - name: Verify provenance (this repository, this release workflow)
+        run: |
+          gh attestation verify verified/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: verified-release
+          path: verified/cougar-advising.tar.gz
+          retention-days: 7
+
+  approve:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    permissions: {}
+    steps:
+      - name: Record the named approval
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          test -n "$DEPLOY_TOKEN" || { echo "::error::DEPLOY_TOKEN is not set on the production environment"; exit 1; }
+          echo "Approved for production: $VERSION sha256:$SHA256 (run $GITHUB_RUN_ID)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: approve
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.pages.outputs.page_url }}
     steps:
-      - name: Download the latest release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download latest --repo "$GITHUB_REPOSITORY" --pattern 'cougar-advising.tar.gz' --dir dl --clobber
-      - name: Unpack the site
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: verified-release
+          path: verified
+      - name: Re-check the bytes before they go live
+        run: echo "$SHA256  verified/cougar-advising.tar.gz" | sha256sum --check --strict
+      - name: Assemble the site from the verified artifact only
         run: |
-          mkdir -p site
-          tar -xzf dl/cougar-advising.tar.gz -C site --strip-components=1
-          echo '{"tag":"latest"}' > site/release.json
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
+          mkdir -p site/release
+          tar -xzf verified/cougar-advising.tar.gz -C site --strip-components=1
+          cp verified/cougar-advising.tar.gz site/release/
+          printf '{"version":"%s","sha256":"%s","deploy_run":"%s"}\n' "$VERSION" "$SHA256" "$GITHUB_RUN_ID" > site/release.json
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
       - id: pages
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  post-deploy:
+    needs: [verify, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: verified-release
+          path: verified
+      - name: Check production is serving the approved bytes
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+        run: python3 scripts/post_deploy.py "$PAGE_URL" "$VERSION" "$SHA256" verified/cougar-advising.tar.gz
+      - name: Verify provenance of the bytes production is serving
+        run: |
+          gh attestation verify live.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" | tee -a post-deploy.md
+      - name: Publish the record
+        if: always()
+        run: test -f post-deploy.md && cat post-deploy.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: post-deploy
+          path: post-deploy.md
