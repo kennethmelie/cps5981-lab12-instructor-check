@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cougar Advising</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header><h1>Cougar Advising</h1><p>Book a meeting with your academic advisor.</p></header>
+<main>
+  <form id="book">
+    <label>Student ID <input name="sid" required pattern="[0-9]{7}"></label>
+    <label>Preferred day <input name="day" type="date" required></label>
+    <button>Request appointment</button>
+  </form>
+  <p id="msg" role="status"></p>
+</main>
+<footer>Release <span id="rel">unknown</span></footer>
+<script src="app.js"></script>
+</body>
+</html>

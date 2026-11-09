@@ -1,0 +1,30 @@
+# STARTER - deliberately weak. Deploys whatever currently holds the "latest" tag.
+name: deploy
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions: write-all
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - name: Download the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download latest --repo "$GITHUB_REPOSITORY" --pattern 'cougar-advising.tar.gz' --dir dl --clobber
+      - name: Unpack the site
+        run: |
+          mkdir -p site
+          tar -xzf dl/cougar-advising.tar.gz -C site --strip-components=1
+          echo '{"tag":"latest"}' > site/release.json
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: pages
+        uses: actions/deploy-pages@v5

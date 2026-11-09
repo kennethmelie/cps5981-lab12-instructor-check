@@ -1,0 +1,10 @@
+{
+  "name": "cougar-advising",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo front end for CPS 5981 Lab 12",
+  "dependencies": {
+    "dayjs": "1.11.13",
+    "dompurify": "3.2.4"
+  }
+}

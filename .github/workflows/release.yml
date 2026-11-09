@@ -1,0 +1,32 @@
+# STARTER - deliberately weak. Lab 12 asks you to find and fix what is wrong here.
+name: release
+on:
+  workflow_dispatch:
+
+permissions: write-all
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load configuration
+        run: |
+          set -a; . config/app.env; set +a
+          echo "Deploy token loaded: ${DEPLOY_TOKEN:0:16}..."
+      - name: Build
+        run: bash build/build.sh latest
+      - name: Publish as "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest dist/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "latest build from main" \
+            --notes "The latest build from main (run ${{ github.run_id }})."
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/deploy.yml

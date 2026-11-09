@@ -1,0 +1,33 @@
+# STARTER - the "quick fix" path. Rebuilds and replaces the asset on the "latest" release, then redeploys.
+name: hotfix
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: Banner text for the hotfix
+        default: Advising hours extended this week
+
+permissions: write-all
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch and rebuild
+        env:
+          NOTE: ${{ inputs.note }}
+        run: |
+          sed -i "s|<main>|<main><p class=\"banner\">${NOTE}</p>|" app/index.html
+          git -c user.email=ci@example.edu -c user.name=ci commit -qam "hotfix (not pushed)"
+          bash build/build.sh latest
+      - name: Replace the asset on "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest dist/cougar-advising.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+
+  deploy:
+    needs: hotfix
+    uses: ./.github/workflows/deploy.yml
