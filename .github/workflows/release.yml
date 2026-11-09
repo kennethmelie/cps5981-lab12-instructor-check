@@ -1,32 +1,72 @@
-# STARTER - deliberately weak. Lab 12 asks you to find and fix what is wrong here.
+# Lab 12 reference: a release is a hash, not a branch name.
 name: release
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag for this release, for example v1.0.0 (never reused)
+        required: true
 
-permissions: write-all
+permissions: {}
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the release
+      id-token: write        # sign the attestations (Sigstore)
+      attestations: write    # store the attestations
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Load configuration
+          persist-credentials: false
+      - name: Refuse to reuse a version
         run: |
-          set -a; . config/app.env; set +a
-          echo "Deploy token loaded: ${DEPLOY_TOKEN:0:16}..."
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v1.0.0"; exit 1; }
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$VERSION already exists. A released version is never replaced: choose a new version."; exit 1
+          fi
       - name: Build
-        run: bash build/build.sh latest
-      - name: Publish as "latest"
-        env:
-          GH_TOKEN: ${{ github.token }}
+        run: bash build/build.sh "$VERSION"
+      - name: Record the artifact identity
+        run: python3 scripts/identity.py dist/cougar-advising.tar.gz "$VERSION"
+      - name: Generate the SBOM from the same build
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          file: dist/cougar-advising.tar.gz
+          format: cyclonedx-json
+          output-file: dist/release-sbom.raw.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Bind the SBOM to the artifact hash
+        run: python3 scripts/bind_sbom.py dist/release-sbom.raw.json dist/release-sbom.json dist/release-identity.json
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/cougar-advising.tar.gz
+      - name: Attest the SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/cougar-advising.tar.gz
+          sbom-path: dist/release-sbom.json
+      - name: Publish the versioned release
         run: |
-          gh release delete latest --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
-          gh release create latest dist/cougar-advising.tar.gz --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "latest build from main" \
-            --notes "The latest build from main (run ${{ github.run_id }})."
-
-  deploy:
-    needs: release
-    uses: ./.github/workflows/deploy.yml
+          sha=$(cut -d' ' -f1 dist/artifact-hash.txt)
+          gh release create "$VERSION" dist/cougar-advising.tar.gz dist/artifact-hash.txt dist/release-sbom.json dist/release-identity.json \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION" \
+            --notes "Artifact sha256:$sha. Built from $GITHUB_SHA by run $GITHUB_RUN_ID. Provenance and SBOM attestations: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/attestations"
+          {
+            echo "## Release $VERSION"
+            echo "| Field | Value |"; echo "|---|---|"
+            echo "| Artifact | cougar-advising.tar.gz |"
+            echo "| SHA-256 | \`$sha\` |"
+            echo "| Source commit | \`$GITHUB_SHA\` |"
+            echo "| Builder | \`$GITHUB_WORKFLOW_REF\` |"
+            echo "| SBOM | release-sbom.json (bound to the hash above, attested) |"
+            echo ""
+            echo "To deploy: Actions > deploy > Run workflow, version \`$VERSION\`, sha256 \`$sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
